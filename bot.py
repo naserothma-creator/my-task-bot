@@ -19,7 +19,10 @@ from aiogram.types import (
 # الإعدادات
 # =========================================================
 
-API_TOKEN = "8649041060:AAGzbwDL9bgwpmmFA8_BOH5j3kW_dz2YaIs"
+import os
+
+API_TOKEN = os.getenv("BOT_TOKEN")
+
 
 ADMIN_ID = 8672813301
 
