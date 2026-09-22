@@ -920,10 +920,13 @@ async def admin_panel(message: types.Message):
         return
 
     cursor.execute(
-        "SELECT COUNT(*) FROM users"
-    )
+        "SELECT COUNT(*) FROM users")
+    
+    
 
     users_count = cursor.fetchone()[0]
 
     cursor.execute(
-        "SELECT COUNT(*) FROM tasks"
+        "SELECT COUNT(*) FROM tasks")
+    
+    
