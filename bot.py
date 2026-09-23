@@ -1,48 +1,46 @@
 import asyncio
 import logging
+import os
 import sqlite3
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    ReplyKeyboardMarkup,
+    KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    ReplyKeyboardMarkup,
-    KeyboardButton
 )
-
 
 # =========================================================
 # الإعدادات
 # =========================================================
 
-import os
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-API_TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN غير موجود في Railway Variables")
 
+if ADMIN_ID == 0:
+    raise RuntimeError("ADMIN_ID غير موجود في Railway Variables")
 
-ADMIN_ID = 8672813301
-
-DATABASE = "tasks.db"
-
-
-# =========================================================
-# إعداد التسجيل
-# =========================================================
+DB_PATH = os.getenv("DB_PATH", "tasks.db")
 
 logging.basicConfig(level=logging.INFO)
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
 
 # =========================================================
 # قاعدة البيانات
 # =========================================================
 
-conn = sqlite3.connect(DATABASE)
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
-
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
@@ -50,7 +48,6 @@ CREATE TABLE IF NOT EXISTS users (
     balance REAL DEFAULT 0
 )
 """)
-
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS tasks (
@@ -61,31 +58,22 @@ CREATE TABLE IF NOT EXISTS tasks (
 )
 """)
 
-
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS submissions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     task_id INTEGER NOT NULL,
-    status TEXT DEFAULT 'pending'
+    status TEXT DEFAULT 'pending',
+    proof_type TEXT,
+    proof_file_id TEXT
 )
 """)
-
 
 conn.commit()
 
 
 # =========================================================
-# البوت
-# =========================================================
-
-bot = Bot(token=API_TOKEN)
-
-dp = Dispatcher(storage=MemoryStorage())
-
-
-# =========================================================
-# حالات إضافة المهمة
+# الحالات
 # =========================================================
 
 class AddTask(StatesGroup):
@@ -94,60 +82,46 @@ class AddTask(StatesGroup):
     waiting_reward = State()
 
 
-# =========================================================
-# حالات إرسال الإثبات
-# =========================================================
-
 class ProofState(StatesGroup):
     waiting_proof = State()
 
 
 # =========================================================
-# لوحة المستخدم
+# لوحات المفاتيح
 # =========================================================
 
 def user_keyboard():
-
-    keyboard = ReplyKeyboardMarkup(
+    return ReplyKeyboardMarkup(
         keyboard=[
             [
                 KeyboardButton(text="📋 المهام"),
-                KeyboardButton(text="💰 رصيدي")
+                KeyboardButton(text="💰 رصيدي"),
             ],
             [
-                KeyboardButton(text="🆔 معرفي")
-            ]
+                KeyboardButton(text="🆔 معرفي"),
+            ],
         ],
         resize_keyboard=True
     )
 
-    return keyboard
-
-
-# =========================================================
-# لوحة الأدمن
-# =========================================================
 
 def admin_keyboard():
-
-    keyboard = ReplyKeyboardMarkup(
+    return ReplyKeyboardMarkup(
         keyboard=[
             [
                 KeyboardButton(text="📋 المهام"),
-                KeyboardButton(text="💰 رصيدي")
+                KeyboardButton(text="💰 رصيدي"),
+            ],
+            [
+                KeyboardButton(text="🆔 معرفي"),
+                KeyboardButton(text="🛠 لوحة التحكم"),
             ],
             [
                 KeyboardButton(text="➕ إضافة مهمة"),
-                KeyboardButton(text="🆔 معرفي")
             ],
-            [
-                KeyboardButton(text="🛠 لوحة التحكم")
-            ]
         ],
         resize_keyboard=True
     )
-
-    return keyboard
 
 
 # =========================================================
@@ -155,12 +129,10 @@ def admin_keyboard():
 # =========================================================
 
 def register_user(user_id):
-
     cursor.execute(
         "INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)",
         (user_id,)
     )
-
     conn.commit()
 
 
@@ -171,25 +143,19 @@ def register_user(user_id):
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
 
-    user_id = message.from_user.id
+    register_user(message.from_user.id)
 
-    register_user(user_id)
-
-    if user_id == ADMIN_ID:
-
-        await message.answer(
-            "👋 أهلاً بك يا أدمن\n\n"
-            "تم تشغيل لوحة الإدارة الخاصة بك.",
-            reply_markup=admin_keyboard()
-        )
-
+    if message.from_user.id == ADMIN_ID:
+        keyboard = admin_keyboard()
     else:
+        keyboard = user_keyboard()
 
-        await message.answer(
-            "👋 أهلاً بك في بوت المهام 🤖\n\n"
-            "يمكنك تنفيذ المهام وإرسال الإثبات للحصول على المكافآت.",
-            reply_markup=user_keyboard()
-        )
+    await message.answer(
+        f"أهلاً بك يا {message.from_user.first_name}! 👋\n\n"
+        "مرحباً بك في بوت المهام والمكافآت 💰\n\n"
+        "اختر أحد الأزرار من القائمة.",
+        reply_markup=keyboard
+    )
 
 
 # =========================================================
@@ -200,7 +166,7 @@ async def start_command(message: types.Message):
 async def my_id(message: types.Message):
 
     await message.answer(
-        f"🆔 معرف حسابك:\n\n"
+        f"🆔 معرف Telegram الخاص بك:\n\n"
         f"`{message.from_user.id}`",
         parse_mode="Markdown"
     )
@@ -226,7 +192,8 @@ async def my_balance(message: types.Message):
 
     await message.answer(
         f"💰 رصيدك الحالي:\n\n"
-        f"💵 {balance:.2f}"
+        f"**{balance:.2f}**",
+        parse_mode="Markdown"
     )
 
 
@@ -244,11 +211,9 @@ async def show_tasks(message: types.Message):
     tasks = cursor.fetchall()
 
     if not tasks:
-
         await message.answer(
             "📭 لا توجد مهام متاحة حالياً."
         )
-
         return
 
     await message.answer("📋 المهام المتاحة:")
@@ -266,15 +231,11 @@ async def show_tasks(message: types.Message):
             ]
         )
 
-        text = (
-            f"📝 <b>{title}</b>\n\n"
-            f"📄 الوصف:\n{description}\n\n"
-            f"💰 المكافأة: {reward:.2f}"
-        )
-
         await message.answer(
-            text,
-            parse_mode="HTML",
+            f"📝 **{title}**\n\n"
+            f"{description}\n\n"
+            f"💰 المكافأة: **{reward:.2f}**",
+            parse_mode="Markdown",
             reply_markup=keyboard
         )
 
@@ -284,7 +245,10 @@ async def show_tasks(message: types.Message):
 # =========================================================
 
 @dp.callback_query(F.data.startswith("task_"))
-async def select_task(callback: types.CallbackQuery, state: FSMContext):
+async def select_task(
+    callback: types.CallbackQuery,
+    state: FSMContext
+):
 
     task_id = int(callback.data.split("_")[1])
 
@@ -296,65 +260,86 @@ async def select_task(callback: types.CallbackQuery, state: FSMContext):
     task = cursor.fetchone()
 
     if not task:
-
         await callback.answer(
-            "❌ هذه المهمة غير موجودة.",
+            "المهمة غير موجودة.",
             show_alert=True
         )
-
         return
 
     title, description, reward = task
+
+    # منع إرسال أكثر من إثبات لنفس المهمة وهي قيد المراجعة
+    cursor.execute(
+        """
+        SELECT id FROM submissions
+        WHERE user_id = ?
+        AND task_id = ?
+        AND status = 'pending'
+        """,
+        (callback.from_user.id, task_id)
+    )
+
+    if cursor.fetchone():
+        await callback.answer(
+            "لديك إثبات قيد المراجعة لهذه المهمة.",
+            show_alert=True
+        )
+        return
 
     await state.update_data(task_id=task_id)
 
     await state.set_state(ProofState.waiting_proof)
 
     await callback.message.answer(
-        f"📤 اخترت المهمة:\n\n"
-        f"📝 {title}\n\n"
-        f"💰 المكافأة: {reward:.2f}\n\n"
-        f"أرسل الآن إثبات تنفيذ المهمة.\n\n"
-        f"يمكنك إرسال:\n"
-        f"🖼 صورة\n"
-        f"📎 ملف\n\n"
-        f"بعد الإرسال سيتم تحويل الإثبات إلى الإدارة للمراجعة."
+        f"📤 تنفيذ المهمة:\n\n"
+        f"**{title}**\n\n"
+        f"{description}\n\n"
+        f"💰 المكافأة: **{reward:.2f}**\n\n"
+        "أرسل الآن إثبات تنفيذ المهمة.\n"
+        "يمكنك إرسال صورة 🖼️ أو ملف 📎.",
+        parse_mode="Markdown"
     )
 
     await callback.answer()
 
 
 # =========================================================
-# استقبال صورة الإثبات
+# استقبال إثبات بصورة
 # =========================================================
 
-@dp.message(ProofState.waiting_proof, F.photo)
-async def receive_photo(message: types.Message, state: FSMContext):
+@dp.message(
+    ProofState.waiting_proof,
+    F.photo
+)
+async def receive_photo_proof(
+    message: types.Message,
+    state: FSMContext
+):
 
     data = await state.get_data()
-
     task_id = data.get("task_id")
 
     if not task_id:
-
-        await message.answer("❌ حدث خطأ، حاول مرة أخرى.")
-
         await state.clear()
-
+        await message.answer("حدث خطأ. حاول اختيار المهمة مرة أخرى.")
         return
 
-    user_id = message.from_user.id
+    file_id = message.photo[-1].file_id
 
     cursor.execute(
         """
-        INSERT INTO submissions (user_id, task_id, status)
-        VALUES (?, ?, 'pending')
+        INSERT INTO submissions
+        (user_id, task_id, status, proof_type, proof_file_id)
+        VALUES (?, ?, 'pending', 'photo', ?)
         """,
-        (user_id, task_id)
+        (
+            message.from_user.id,
+            task_id,
+            file_id
+        )
     )
 
     submission_id = cursor.lastrowid
-
     conn.commit()
 
     cursor.execute(
@@ -364,15 +349,8 @@ async def receive_photo(message: types.Message, state: FSMContext):
 
     task = cursor.fetchone()
 
-    if not task:
-
-        await message.answer("❌ المهمة غير موجودة.")
-
-        await state.clear()
-
-        return
-
-    title, reward = task
+    title = task[0]
+    reward = task[1]
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -387,63 +365,67 @@ async def receive_photo(message: types.Message, state: FSMContext):
                 )
             ]
         ]
-    )
-
-    caption = (
-        "📨 <b>إثبات مهمة جديد</b>\n\n"
-        f"👤 المستخدم: <code>{user_id}</code>\n"
-        f"📝 المهمة: {title}\n"
-        f"💰 المكافأة: {reward:.2f}\n"
-        f"🆔 رقم الطلب: {submission_id}"
     )
 
     await bot.send_photo(
-        ADMIN_ID,
-        message.photo[-1].file_id,
-        caption=caption,
-        parse_mode="HTML",
+        chat_id=ADMIN_ID,
+        photo=file_id,
+        caption=(
+            f"📨 إثبات مهمة جديد\n\n"
+            f"👤 المستخدم: {message.from_user.full_name}\n"
+            f"🆔 ID: {message.from_user.id}\n"
+            f"📝 المهمة: {title}\n"
+            f"💰 المكافأة: {reward:.2f}\n"
+            f"🔢 رقم الطلب: {submission_id}"
+        ),
         reply_markup=keyboard
     )
 
     await message.answer(
-        "✅ تم إرسال الإثبات إلى الإدارة.\n\n"
-        "⏳ انتظر حتى تتم مراجعة المهمة."
+        "✅ تم إرسال إثبات المهمة إلى المشرف.\n"
+        "انتظر المراجعة."
     )
 
     await state.clear()
 
 
 # =========================================================
-# استقبال ملف الإثبات
+# استقبال إثبات كملف
 # =========================================================
 
-@dp.message(ProofState.waiting_proof, F.document)
-async def receive_document(message: types.Message, state: FSMContext):
+@dp.message(
+    ProofState.waiting_proof,
+    F.document
+)
+async def receive_document_proof(
+    message: types.Message,
+    state: FSMContext
+):
 
     data = await state.get_data()
-
     task_id = data.get("task_id")
 
     if not task_id:
-
-        await message.answer("❌ حدث خطأ، حاول مرة أخرى.")
-
         await state.clear()
-
+        await message.answer("حدث خطأ. حاول اختيار المهمة مرة أخرى.")
         return
 
-    user_id = message.from_user.id
+    file_id = message.document.file_id
 
     cursor.execute(
         """
-        INSERT INTO submissions (user_id, task_id, status)
-        VALUES (?, ?, 'pending')
+        INSERT INTO submissions
+        (user_id, task_id, status, proof_type, proof_file_id)
+        VALUES (?, ?, 'pending', 'document', ?)
         """,
-        (user_id, task_id)
+        (
+            message.from_user.id,
+            task_id,
+            file_id
+        )
     )
 
     submission_id = cursor.lastrowid
-
     conn.commit()
 
     cursor.execute(
@@ -453,15 +435,8 @@ async def receive_document(message: types.Message, state: FSMContext):
 
     task = cursor.fetchone()
 
-    if not task:
-
-        await message.answer("❌ المهمة غير موجودة.")
-
-        await state.clear()
-
-        return
-
-    title, reward = task
+    title = task[0]
+    reward = task[1]
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -478,39 +453,37 @@ async def receive_document(message: types.Message, state: FSMContext):
         ]
     )
 
-    caption = (
-        "📨 <b>إثبات مهمة جديد</b>\n\n"
-        f"👤 المستخدم: <code>{user_id}</code>\n"
-        f"📝 المهمة: {title}\n"
-        f"💰 المكافأة: {reward:.2f}\n"
-        f"🆔 رقم الطلب: {submission_id}"
-    )
-
     await bot.send_document(
-        ADMIN_ID,
-        message.document.file_id,
-        caption=caption,
-        parse_mode="HTML",
+        chat_id=ADMIN_ID,
+        document=file_id,
+        caption=(
+            f"📨 إثبات مهمة جديد\n\n"
+            f"👤 المستخدم: {message.from_user.full_name}\n"
+            f"🆔 ID: {message.from_user.id}\n"
+            f"📝 المهمة: {title}\n"
+            f"💰 المكافأة: {reward:.2f}\n"
+            f"🔢 رقم الطلب: {submission_id}"
+        ),
         reply_markup=keyboard
     )
 
     await message.answer(
-        "✅ تم إرسال الإثبات إلى الإدارة.\n\n"
-        "⏳ انتظر حتى تتم مراجعة المهمة."
+        "✅ تم إرسال إثبات المهمة إلى المشرف.\n"
+        "انتظر المراجعة."
     )
 
     await state.clear()
 
 
 # =========================================================
-# إذا أرسل المستخدم شيئاً غير صورة أو ملف
+# إذا أرسل المستخدم نصاً بدل الإثبات
 # =========================================================
 
 @dp.message(ProofState.waiting_proof)
 async def wrong_proof(message: types.Message):
 
     await message.answer(
-        "⚠️ أرسل إثبات المهمة كصورة 🖼 أو ملف 📎."
+        "⚠️ أرسل إثبات المهمة كصورة 🖼️ أو ملف 📎."
     )
 
 
@@ -519,20 +492,18 @@ async def wrong_proof(message: types.Message):
 # =========================================================
 
 @dp.callback_query(F.data.startswith("approve_"))
-async def approve_submission(callback: types.CallbackQuery):
+async def approve_submission(
+    callback: types.CallbackQuery
+):
 
     if callback.from_user.id != ADMIN_ID:
-
         await callback.answer(
-            "❌ ليس لديك صلاحية.",
+            "ليس لديك صلاحية.",
             show_alert=True
         )
-
         return
 
-    submission_id = int(
-        callback.data.split("_")[1]
-    )
+    submission_id = int(callback.data.split("_")[1])
 
     cursor.execute(
         """
@@ -546,23 +517,19 @@ async def approve_submission(callback: types.CallbackQuery):
     submission = cursor.fetchone()
 
     if not submission:
-
         await callback.answer(
-            "❌ الطلب غير موجود.",
+            "الطلب غير موجود.",
             show_alert=True
         )
-
         return
 
     user_id, task_id, status = submission
 
     if status != "pending":
-
         await callback.answer(
-            "⚠️ تمت معالجة هذا الطلب مسبقاً.",
+            "تمت معالجة هذا الطلب مسبقاً.",
             show_alert=True
         )
-
         return
 
     cursor.execute(
@@ -573,22 +540,16 @@ async def approve_submission(callback: types.CallbackQuery):
     task = cursor.fetchone()
 
     if not task:
-
         await callback.answer(
-            "❌ المهمة غير موجودة.",
+            "المهمة غير موجودة.",
             show_alert=True
         )
-
         return
 
     title, reward = task
 
     cursor.execute(
-        """
-        UPDATE submissions
-        SET status = 'approved'
-        WHERE id = ?
-        """,
+        "UPDATE submissions SET status = 'approved' WHERE id = ?",
         (submission_id,)
     )
 
@@ -603,36 +564,22 @@ async def approve_submission(callback: types.CallbackQuery):
 
     conn.commit()
 
+    await bot.send_message(
+        user_id,
+        f"🎉 تم قبول مهمتك!\n\n"
+        f"📝 المهمة: {title}\n"
+        f"💰 تمت إضافة: {reward:.2f} إلى رصيدك."
+    )
+
     await callback.message.edit_reply_markup(
         reply_markup=None
     )
 
     await callback.message.answer(
-        f"✅ تم قبول المهمة رقم {submission_id}\n\n"
-        f"👤 المستخدم: {user_id}\n"
-        f"📝 المهمة: {title}\n"
-        f"💰 تمت إضافة {reward:.2f} إلى رصيد المستخدم."
+        f"✅ تم قبول الطلب رقم {submission_id}."
     )
 
-    try:
-
-        await bot.send_message(
-            user_id,
-            f"🎉 تم قبول مهمتك!\n\n"
-            f"📝 المهمة: {title}\n"
-            f"💰 المكافأة: {reward:.2f}\n\n"
-            f"تمت إضافة المكافأة إلى رصيدك 💰"
-        )
-
-    except Exception as e:
-
-        logging.error(
-            f"Error sending approval message: {e}"
-        )
-
-    await callback.answer(
-        "✅ تم قبول المهمة."
-    )
+    await callback.answer("تم القبول ✅")
 
 
 # =========================================================
@@ -640,24 +587,22 @@ async def approve_submission(callback: types.CallbackQuery):
 # =========================================================
 
 @dp.callback_query(F.data.startswith("reject_"))
-async def reject_submission(callback: types.CallbackQuery):
+async def reject_submission(
+    callback: types.CallbackQuery
+):
 
     if callback.from_user.id != ADMIN_ID:
-
         await callback.answer(
-            "❌ ليس لديك صلاحية.",
+            "ليس لديك صلاحية.",
             show_alert=True
         )
-
         return
 
-    submission_id = int(
-        callback.data.split("_")[1]
-    )
+    submission_id = int(callback.data.split("_")[1])
 
     cursor.execute(
         """
-        SELECT user_id, task_id, status
+        SELECT user_id, status
         FROM submissions
         WHERE id = ?
         """,
@@ -667,72 +612,85 @@ async def reject_submission(callback: types.CallbackQuery):
     submission = cursor.fetchone()
 
     if not submission:
-
         await callback.answer(
-            "❌ الطلب غير موجود.",
+            "الطلب غير موجود.",
             show_alert=True
         )
-
         return
 
-    user_id, task_id, status = submission
+    user_id, status = submission
 
     if status != "pending":
-
         await callback.answer(
-            "⚠️ تمت معالجة هذا الطلب مسبقاً.",
+            "تمت معالجة هذا الطلب مسبقاً.",
             show_alert=True
         )
-
         return
 
     cursor.execute(
-        "SELECT title FROM tasks WHERE id = ?",
-        (task_id,)
-    )
-
-    task = cursor.fetchone()
-
-    title = task[0] if task else "مهمة"
-
-    cursor.execute(
-        """
-        UPDATE submissions
-        SET status = 'rejected'
-        WHERE id = ?
-        """,
+        "UPDATE submissions SET status = 'rejected' WHERE id = ?",
         (submission_id,)
     )
 
     conn.commit()
+
+    await bot.send_message(
+        user_id,
+        "❌ تم رفض إثبات المهمة.\n\n"
+        "يمكنك تنفيذ المهمة وإرسال إثبات جديد."
+    )
 
     await callback.message.edit_reply_markup(
         reply_markup=None
     )
 
     await callback.message.answer(
-        f"❌ تم رفض المهمة رقم {submission_id}\n\n"
-        f"👤 المستخدم: {user_id}\n"
-        f"📝 المهمة: {title}"
+        f"❌ تم رفض الطلب رقم {submission_id}."
     )
 
-    try:
+    await callback.answer("تم الرفض ❌")
 
-        await bot.send_message(
-            user_id,
-            f"❌ تم رفض إثبات المهمة.\n\n"
-            f"📝 المهمة: {title}\n\n"
-            f"يمكنك تنفيذ المهمة مرة أخرى وإرسال إثبات واضح."
-        )
 
-    except Exception as e:
+# =========================================================
+# لوحة تحكم المشرف
+# =========================================================
 
-        logging.error(
-            f"Error sending rejection message: {e}"
-        )
+@dp.message(F.text == "🛠 لوحة التحكم")
+async def admin_panel(message: types.Message):
 
-    await callback.answer(
-        "❌ تم رفض المهمة."
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ ليس لديك صلاحية.")
+        return
+
+    cursor.execute("SELECT COUNT(*) FROM users")
+    users_count = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM tasks")
+    tasks_count = cursor.fetchone()[0]
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM submissions WHERE status = 'pending'"
+    )
+    pending_count = cursor.fetchone()[0]
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM submissions WHERE status = 'approved'"
+    )
+    approved_count = cursor.fetchone()[0]
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM submissions WHERE status = 'rejected'"
+    )
+    rejected_count = cursor.fetchone()[0]
+
+    await message.answer(
+        "🛠 **لوحة التحكم**\n\n"
+        f"👥 المستخدمون: {users_count}\n"
+        f"📝 المهام: {tasks_count}\n"
+        f"⏳ قيد المراجعة: {pending_count}\n"
+        f"✅ المهام المقبولة: {approved_count}\n"
+        f"❌ المهام المرفوضة: {rejected_count}",
+        parse_mode="Markdown"
     )
 
 
@@ -741,26 +699,20 @@ async def reject_submission(callback: types.CallbackQuery):
 # =========================================================
 
 @dp.message(F.text == "➕ إضافة مهمة")
-async def add_task_start(message: types.Message, state: FSMContext):
+async def add_task_start(
+    message: types.Message,
+    state: FSMContext
+):
 
     if message.from_user.id != ADMIN_ID:
-
-        await message.answer(
-            "❌ ليس لديك صلاحية استخدام هذا الخيار."
-        )
-
+        await message.answer("❌ ليس لديك صلاحية.")
         return
 
-    await state.set_state(
-        AddTask.waiting_title
-    )
+    await state.set_state(AddTask.waiting_title)
 
     await message.answer(
         "➕ إضافة مهمة جديدة\n\n"
-        "الخطوة 1️⃣\n\n"
-        "أرسل اسم المهمة.\n\n"
-        "مثال:\n"
-        "📱 تحميل تطبيق"
+        "أرسل اسم المهمة:"
     )
 
 
@@ -774,31 +726,12 @@ async def add_task_title(
     state: FSMContext
 ):
 
-    title = message.text.strip()
+    await state.update_data(title=message.text)
 
-    if len(title) < 2:
-
-        await message.answer(
-            "⚠️ اسم المهمة قصير جداً.\n"
-            "أرسل اسماً واضحاً."
-        )
-
-        return
-
-    await state.update_data(
-        title=title
-    )
-
-    await state.set_state(
-        AddTask.waiting_description
-    )
+    await state.set_state(AddTask.waiting_description)
 
     await message.answer(
-        "✅ تم حفظ اسم المهمة.\n\n"
-        "الخطوة 2️⃣\n\n"
-        "أرسل وصف المهمة بالتفصيل.\n\n"
-        "مثال:\n"
-        "قم بتحميل التطبيق ثم افتحه وأرسل صورة تثبت إتمام المهمة."
+        "الآن أرسل وصف المهمة:"
     )
 
 
@@ -812,33 +745,14 @@ async def add_task_description(
     state: FSMContext
 ):
 
-    description = message.text.strip()
+    await state.update_data(description=message.text)
 
-    if len(description) < 2:
-
-        await message.answer(
-            "⚠️ الوصف قصير جداً.\n"
-            "أرسل وصفاً واضحاً."
-        )
-
-        return
-
-    await state.update_data(
-        description=description
-    )
-
-    await state.set_state(
-        AddTask.waiting_reward
-    )
+    await state.set_state(AddTask.waiting_reward)
 
     await message.answer(
-        "✅ تم حفظ الوصف.\n\n"
-        "الخطوة 3️⃣\n\n"
-        "أرسل قيمة المكافأة فقط.\n\n"
+        "الآن أرسل قيمة المكافأة.\n\n"
         "مثال:\n"
-        "5\n\n"
-        "أو:\n"
-        "10.5"
+        "10"
     )
 
 
@@ -852,92 +766,59 @@ async def add_task_reward(
     state: FSMContext
 ):
 
-    reward_text = message.text.strip()
-
     try:
-
-        reward = float(reward_text)
-
+        reward = float(message.text.replace(",", "."))
     except ValueError:
-
         await message.answer(
-            "❌ المكافأة يجب أن تكون رقماً.\n\n"
-            "مثال:\n"
-            "5\n"
-            "10\n"
-            "2.5"
+            "⚠️ أرسل رقمًا صحيحًا للمكافأة.\n"
+            "مثال: 10"
         )
-
         return
 
     if reward <= 0:
-
         await message.answer(
-            "❌ المكافأة يجب أن تكون أكبر من صفر."
+            "⚠️ المكافأة يجب أن تكون أكبر من صفر."
         )
-
         return
 
     data = await state.get_data()
-
-    title = data["title"]
-    description = data["description"]
 
     cursor.execute(
         """
         INSERT INTO tasks (title, description, reward)
         VALUES (?, ?, ?)
         """,
-        (title, description, reward)
+        (
+            data["title"],
+            data["description"],
+            reward
+        )
     )
 
     conn.commit()
-
-    task_id = cursor.lastrowid
 
     await state.clear()
 
     await message.answer(
         "✅ تمت إضافة المهمة بنجاح!\n\n"
-        f"🆔 رقم المهمة: {task_id}\n"
-        f"📝 الاسم: {title}\n"
-        f"📄 الوصف: {description}\n"
+        f"📝 {data['title']}\n"
         f"💰 المكافأة: {reward:.2f}",
         reply_markup=admin_keyboard()
     )
 
 
 # =========================================================
-# لوحة التحكم
+# تشغيل البوت
 # =========================================================
 
-@dp.message(F.text == "🛠 لوحة التحكم")
-async def admin_panel(message: types.Message):
-
-    if message.from_user.id != ADMIN_ID:
-
-        await message.answer(
-            "❌ ليس لديك صلاحية."
-        )
-
-        return
-
-    cursor.execute(
-        "SELECT COUNT(*) FROM users")
-    
-    
-
-    users_count = cursor.fetchone()[0]
-
-    cursor.execute(
-        "SELECT COUNT(*) FROM tasks")
-    
-    
 async def main():
+
     await bot.delete_webhook(drop_pending_updates=True)
+
+    print("Bot is starting...")
+
     await dp.start_polling(bot)
 
+
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
-    
